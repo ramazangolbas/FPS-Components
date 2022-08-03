@@ -1,0 +1,546 @@
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+using UnityEngine;
+using UnityEngine.Serialization;
+using UnityEngine.UI;
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
+
+public class Weapon : MonoBehaviour
+{
+    //Weapon script'i atanan objeyi silah durumuna sokar. Controller ile baglantisi vardir.
+
+
+    //???
+    static RaycastHit[] s_HitInfoBuffer = new RaycastHit[8];
+    
+
+    //Otomatik ya da seri ates secimi.
+    public enum TriggerType
+    {
+        Auto,
+        Manual
+    }
+
+    //Raycast ve projectile modunun secimi.
+    public enum WeaponType
+    {
+        Raycast,
+        Projectile
+    }
+
+    //Animasyon ve okuma kolayligi icin silahin durumlarini tanimlama.
+    public enum WeaponState
+    {
+        Idle,
+        Firing,
+        Reloading
+    }
+
+
+    //Silahin gelismis ayarlari.
+    //spreadAngle: Kursunun yayilma acisi.
+    //projectilePerShot: Her atista ne kadar kursun cikacagi.
+    //screenShakeMultiplier: Ates ettiginde ekranin ne kadar titreyecegi.
+    [System.Serializable]
+    public class AdvancedSettings
+    {
+        public float spreadAngle = 0.0f;
+        public int projectilePerShot = 1;
+        public float screenShakeMultiplier = 1.0f;
+    }
+
+    //Silahin temel yapitasi.
+    //triggerType:Ates etme tipi.
+    //weaponType: Silahin bir obje mi yoksa isin mi oldugu.
+    //fireRate: Atis hizi.
+    //reloadTime: Sarjor degistirme suresi.
+    //clipSize:Silahin ne kadar sarjor kapasitesine sahip oldugu.
+    //damage:Hedefin ne kadar can kaybedecegi.
+    public TriggerType triggerType = TriggerType.Manual;
+    public WeaponType weaponType = WeaponType.Raycast;
+    public float fireRate = 0.5f;
+    public float reloadTime = 2.0f;
+    public int clipSize = 4;
+    public float damage = 1.0f;
+
+    //Kursun bir obje mi yoksa raycasat mi.
+    [AmmoType]
+    public int ammoType = -1;
+
+    //Obje Kursun prefabi.(sadece ammoType'dan kursun obje secilirse aktif olur.)
+    public Projectile projectilePrefab;
+    public float projectileLaunchForce = 200.0f;
+    
+    //Silahin ucu (muzzle) ayarlanmali.
+    public Transform EndPoint; 
+
+    //advence settings inspector'da gozukur.
+    public AdvancedSettings advancedSettings;
+    
+    //Animasyonlar
+    [Header("Animation Clips")]
+    public AnimationClip FireAnimationClip;
+    public AnimationClip ReloadAnimationClip;
+
+    //Sesler
+    [Header("Audio Clips")]
+    public AudioClip FireAudioClip;
+    public AudioClip ReloadAudioClip;
+    
+    //Kursun efekti unity icinde line renderer ile olusturulmus.
+    //Bu efekti prefab seklinde atamak zorundayiz.
+    [Header("Visual Settings")]
+    public LineRenderer PrefabRayTrail;
+    public bool DisabledOnEmpty;
+    
+    //Gorsel liquid shader atamasi
+    [Header("Visual Display")]
+    public AmmoDisplay AmmoDisplay;
+
+    //Controller'dan gelen silah tetiginin ateslenip ateslenmedigini kontrol eder.
+    public bool triggerDown
+    {
+        get { return m_TriggerDown; }
+        set 
+        { 
+            m_TriggerDown = value;
+            if (!m_TriggerDown) m_ShotDone = false;
+        }
+    }
+
+    //Disariya veri cikarmak icin pravite degiskenleri public'e donusturuyor.
+    //  |
+    //  v
+    //CurrentState'i iceriden cikan m_CurrentState'e donustur.(sanirim disaridan ulasmaya calisacak.) 
+    public WeaponState CurrentState => m_CurrentState;
+    //ClipContent'i iceriden cikan m_ClipContent'e donustur.
+    public int ClipContent => m_ClipContent;
+    //Owner'i iceriden cikan m_Owner'e donustur.
+    public Controller Owner => m_Owner;
+
+    //Donusturulecek olan degiskenlerin bu scriptteki adlari.
+    Controller m_Owner;
+    int m_ClipContent;
+    WeaponState m_CurrentState;
+
+    //Scripttin disindan erisilmesine gerek duyulmayan degiskenler.
+    Animator m_Animator;
+    bool m_ShotDone;
+    float m_ShotTimer = -1.0f;
+    bool m_TriggerDown;
+    
+    AudioSource m_Source;
+
+    Vector3 m_ConvertedMuzzlePos;
+
+    //Bir birimde aktif olan trail'in bilgilerini tutan bir class oluştur.
+    class ActiveTrail
+    {
+        public LineRenderer renderer;
+        public Vector3 direction;
+        public float remainingTime;
+    }
+    //Bu oluşturulan class'in listesini olustur. Aktif olacak objeyi asagida bir sekilde bu listeye ekleyecegiz
+    //ya da sadece varolan bilgileri bu listeden cekecegiz bilmiyorum. GeriDon????????????????????????????????????????????????????????????????????????
+    List<ActiveTrail> m_ActiveTrails = new List<ActiveTrail>();
+    
+    //queue ne ise yarar? Queue icerisine giren objeleri sirayla eklenmesine ve cikarilmasina yarar.(Enqueue:siraya eklemek. Dequeue:siradan cikarmak.)
+    Queue<Projectile> m_ProjectilePool = new Queue<Projectile>();
+    
+    //Çok guzzeeeel. weapon'lar her zaman farkli objelere atandigi icin her(pistol, machine gun, granade) durumda ayni anda islem yapmamasi
+    //icin alinan bir degisken. Yani eger bunu yapmazsan reload yaptiginda elindeki silah reload yapmasi yerine butun silahlar reload yapacak, ya da
+    //ates edecek. Hangi silah su an elinde oldugunun bilgisini tutacak kısacasi.
+    int fireNameHash = Animator.StringToHash("fire");
+    int reloadNameHash = Animator.StringToHash("reload");     
+
+
+    void Awake()
+    {
+        //inspector'daki animator ve audiosource'u cek.
+        m_Animator = GetComponentInChildren<Animator>();
+        m_Source = GetComponentInChildren<AudioSource>();
+        //sarjor kapasitesi atamasi.
+        m_ClipContent = clipSize;
+
+        //Eger line renderer atanmissa havuza 16 tane kursun olustur.
+        if (PrefabRayTrail != null)
+        {
+            //const ne anlama geliyor?: Acilimi constant. Bu da bir daha degistirilemeyecek olan ve hic atanamayacak olan degiskenlerde kullanilir.
+            //Yani read only.
+            const int trailPoolSize = 16;
+            //PoolSystem Scripttinden cekilen, havuza veri yaratma kodunu uygula.
+            PoolSystem.Instance.InitPool(PrefabRayTrail, trailPoolSize);
+        }
+
+        //Eger projectile (yani obje olarak atilacak olan bomba) atanmissa iceri gir.
+        if (projectilePrefab != null)
+        {
+            //Aynı anda bir atış hakkına sahip olduğun silahlarda ammo kapasitesinin(clip size) 4 olmasi idealdir.
+            //Ard arda atış yapabileceği için sınırlı sayıda olması da iyidir.
+            //a minimum of 4 is useful for weapon that have a clip size of 1 and where you can throw a second
+            //or more before the previous one was recycled/exploded.
+
+            //Atilabilecek bomba sayisini kararlastirir.Burada(size) belirleyeceğin kadar Objeyi havuzda yaratir.
+            //AdvancedSettings'ten ayni anda atacagin bomba sayisini degistirebilirsin.
+            int size = Mathf.Max(4, clipSize) * advancedSettings.projectilePerShot;
+            //ne kadar kapasiteye sahipse o kadar obje oluştur.
+            for (int i = 0; i < size; ++i)
+            {
+                //Obje yarat
+                Projectile p = Instantiate(projectilePrefab);
+                //yaratilan Objeyi pasif hale getir.
+                p.gameObject.SetActive(false);
+                //yaratilan objeyi Queue sirasina ekle.
+                m_ProjectilePool.Enqueue(p);
+            }
+        }
+    }
+
+    //Hangi silahin secili oldugu bilgisini Controller'a gönderir. Bu her silaha koyulan bir script olduğu icin bir şekilde hangi weapon
+    //scripttini aktif hale getirecegimizi öğrenmemiz gerekir.
+    //PickedUp fonksiyonu sayesinde o anda hangi silahi seçtiğimizi öğreniriz.
+    public void PickedUp(Controller c)
+    {
+        m_Owner = c;
+    }
+
+    //Silahi yerine koyar. 
+    public void PutAway()
+    {
+        //animator'daki bilgileri yazdirmaya zorlar. Böylece Silah değiştirdiğinde hangi silahin animasyonu oynayacaği değiştirilmiş olur.
+        m_Animator.WriteDefaultValues();
+        //O an aktif kurşunlari pasif hale getirir.
+        for (int i = 0; i < m_ActiveTrails.Count; ++i)
+        {
+            var activeTrail = m_ActiveTrails[i];
+            m_ActiveTrails[i].renderer.gameObject.SetActive(false);
+        }
+        //(Yukarıdaki bunun görevini üstleniyor zaten ama garanti olsun diye temizlemiş)Aktif kurşun kaldiysa onu da temizler.
+        m_ActiveTrails.Clear();
+    }
+
+    //Seçilen silahın bilgilerini gönderir.(Controller'a)
+    public void Selected()
+    {
+        //PickedUp fonksiyonu ile seçilen silahın ammo bilgisi ammoRemaning'e atanir.
+        var ammoRemaining = m_Owner.GetAmmo(ammoType);
+
+        //Eğer diabledOnEmpty inspactor'dan seciliyse o silahin mühimmatı bittiğinde ya da şarjör kapasitesi sıfırsa görünmez olur.
+        if (DisabledOnEmpty)
+            gameObject.SetActive(ammoRemaining != 0 || m_ClipContent != 0);
+        //FireAnimationClip atandiysa içine girer. FireAnimation animasyonunu oynatir.
+        if(FireAnimationClip != null)
+            m_Animator.SetFloat("fireSpeed",  FireAnimationClip.length / fireRate);
+        //RelaoadAinmationClip atandiysa içine girer. Reload animasyonunu oynatir.
+        if(ReloadAnimationClip != null)
+            m_Animator.SetFloat("reloadSpeed", ReloadAnimationClip.length / reloadTime);
+
+        //Yukarıdaki hiçbir şeyi yapmazsan idle'da bekle.
+        m_CurrentState = WeaponState.Idle;
+
+        //Manual modu tetikler.
+        triggerDown = false;
+        //Ateş etme kontrolcüsü.
+        m_ShotDone = false;
+        
+        //WeaponInfoUI UI'a bilgi aktarimi yapmak için oluşturulmuş bir script.  
+        WeaponInfoUI.Instance.UpdateWeaponName(this);
+        WeaponInfoUI.Instance.UpdateClipInfo(this);
+        WeaponInfoUI.Instance.UpdateAmmoAmount(m_Owner.GetAmmo(ammoType));
+        
+        //AmmoDisplay eğer kullaniliyorsa(inspector'dan eklenmişse) içine gir. Ve kurşun bilgisini güncelle.
+        if(AmmoDisplay)
+            AmmoDisplay.UpdateAmount(m_ClipContent, clipSize);
+
+        //Kurşun bitikse otomatik olarak kurşun değiştirir.
+        if (m_ClipContent == 0 && ammoRemaining != 0)
+        { 
+            //this can only happen if the weapon ammo reserve was empty and we picked some since then. So directly
+            //reload the clip when wepaon is selected          
+            int chargeInClip = Mathf.Min(ammoRemaining, clipSize);
+            m_ClipContent += chargeInClip;        
+            if(AmmoDisplay)
+                AmmoDisplay.UpdateAmount(m_ClipContent, clipSize);        
+            m_Owner.ChangeAmmo(ammoType, -chargeInClip);       
+            WeaponInfoUI.Instance.UpdateClipInfo(this);
+        }
+        //Bu scripttin olduğu objenin içindeki animator'ün selected tetikleyicisini aktif hale getirir.
+        m_Animator.SetTrigger("selected");
+    }
+
+    //Ateş ettiğinde çağırılır.
+    public void Fire()
+    {
+        //WeaponState.Idle durumunda değilse yani karakter zaten ates ediyorsa ya da farklı bir animasyon yapıyorsa ates etme. Sadece ates etme
+        //animasyonu oynuyorsa ates et. Verilen shotTimer(ates etme aralığı)dan düşükse ates etme. Kursunun yoksa ates etme.
+        if (m_CurrentState != WeaponState.Idle || m_ShotTimer > 0 || m_ClipContent == 0)
+            return;
+        //Her ates ettiğinde bir mermi azalt.
+        m_ClipContent -= 1;
+        //Ates etme süresini resetler.
+        m_ShotTimer = fireRate;
+
+        //Mühimmatı gösterir.
+        if(AmmoDisplay)
+            AmmoDisplay.UpdateAmount(m_ClipContent, clipSize);
+        
+        //WeaponUI scripttine bilgi aktarimi icin kullanılır.
+        WeaponInfoUI.Instance.UpdateClipInfo(this);
+
+        //the state will only change next frame, so we set it right now.
+        //Ateş etme animasyonu calıştırır.
+        m_CurrentState = WeaponState.Firing;
+        //Animator'den ates et trigger'ını çağırır.
+        m_Animator.SetTrigger("fire");
+
+        //Ates etme sesini farklı sesmiş gibi oynatir.
+        m_Source.pitch = Random.Range(0.7f, 1.0f);
+        m_Source.PlayOneShot(FireAudioClip);
+        //Kamera sarsılma efektini çağır.
+        CameraShaker.Instance.Shake(0.2f, 0.05f * advancedSettings.screenShakeMultiplier);
+
+        //Eğer silah ateş ediyorsa gir etmiyorsa bombaya geç.
+        if (weaponType == WeaponType.Raycast)
+        {
+            //Her ateş ettiğinde kaç mermi atacağini advanceSettingsten ayarla ve uygula.
+            for (int i = 0; i < advancedSettings.projectilePerShot; ++i)
+            {
+                RaycastShot();
+            }
+        }
+        else
+        {
+            ProjectileShot();
+        }
+    }
+
+    //Ateşli her silahı buradan Çağır.
+    void RaycastShot()
+    {
+        //Controller'dan ana kameranin derinliğini çeker ve bunun ortasinda bir nokta bulur.(spreadRatio) 
+        //compute the ratio of our spread angle over the fov to know in viewport space what is the possible offset from center
+        float spreadRatio = advancedSettings.spreadAngle / Controller.Instance.MainCamera.fieldOfView;
+        //bu nokta etrafina bir daire çizer.
+        Vector2 spread = spreadRatio * Random.insideUnitCircle;
+        
+        //Bu dairenin içinde rastgele noktalar seçer.
+        RaycastHit hit;
+        Ray r = Controller.Instance.MainCamera.ViewportPointToRay(Vector3.one * 0.5f + (Vector3)spread);
+        Vector3 hitPosition = r.origin + r.direction * 200.0f;
+        
+        //Eğer raycast 1000 birim uzaklığında, 1-9 arasindaki katmanlardan herhangi bir şeye çarparsa içeri gir. 
+        if (Physics.Raycast(r, out hit, 1000.0f, ~(1 << 9), QueryTriggerInteraction.Ignore))
+        {
+            //çarpan objenin collider'ını al ve ImpactManager aracılığıyla çarpan noktada çarpma efekti oluştur.
+            Renderer renderer = hit.collider.GetComponentInChildren<Renderer>();
+            ImpactManager.Instance.PlayImpact(hit.point, hit.normal, renderer == null ? null : renderer.sharedMaterial);
+
+            //if too close, the trail effect would look weird if it arced to hit the wall, so only correct it if far
+            //Yakındaysa sıkıntı çıkabilir.
+            if (hit.distance > 5.0f)
+                hitPosition = hit.point;
+            
+            //this is a target
+            //10.layer'daki bir objeye ray çarparsa içine gir(Target layer'i).
+            if (hit.collider.gameObject.layer == 10)
+            {
+                //diğer objenin target compenentine ulaş.
+                Target target = hit.collider.gameObject.GetComponent<Target>();
+                //target'a hasar ver.
+                target.Got(damage);
+            }
+        }
+
+        //prefabRayTrail(Line projectile) inspector'dan atanmışsa gir.
+        if (PrefabRayTrail != null)
+        {
+            //ne tarafa doğru gideceğini açıklayan bir çizgi bulur.
+            var pos = new Vector3[] { GetCorrectedMuzzlePlace(), hitPosition };
+            //pool sisteminden line renderer'a ulaşır.
+            var trail = PoolSystem.Instance.GetInstance<LineRenderer>(PrefabRayTrail);
+            //ulaştığı line'ı aktif hale getirir.
+            trail.gameObject.SetActive(true);
+            //aktif hale gelen line'ı, çizilen noktaya(pos) doğru hareket ettirir.
+            trail.SetPositions(pos);
+            //Aktif hale gelen trail line'ı AktifTrail'ler listesine ekler. Ki yukarıda yazılan kodla silinebilsin.
+            m_ActiveTrails.Add(new ActiveTrail()
+            {
+                remainingTime = 0.3f,
+                direction = (pos[1] - pos[0]).normalized,
+                renderer = trail
+            });
+        }
+    }
+
+
+    //Bomba atildiğinda cağrılır.
+    void ProjectileShot()
+    {
+        
+        for (int i = 0; i < advancedSettings.projectilePerShot; ++i)
+        {
+            float angle = Random.Range(0.0f, advancedSettings.spreadAngle * 0.5f);
+            Vector2 angleDir = Random.insideUnitCircle * Mathf.Tan(angle * Mathf.Deg2Rad);
+
+            Vector3 dir = EndPoint.transform.forward + (Vector3)angleDir;
+            dir.Normalize();
+
+            var p = m_ProjectilePool.Dequeue();
+            
+            p.gameObject.SetActive(true);
+            p.Launch(this, dir, projectileLaunchForce);
+        }
+    }
+
+    //For optimization, when a projectile is "destroyed" it is instead disabled and return to the weapon for reuse.
+    public void ReturnProjecticle(Projectile p)
+    {
+        m_ProjectilePool.Enqueue(p);
+    }
+
+    public void Reload()
+    {
+        if (m_CurrentState != WeaponState.Idle || m_ClipContent == clipSize)
+            return;
+
+        int remainingBullet = m_Owner.GetAmmo(ammoType);
+
+        if (remainingBullet == 0)
+        {
+            //No more bullet, so we disable the gun so it's displayed on empty (useful e.g. for  grenade)
+            if(DisabledOnEmpty)
+                gameObject.SetActive(false);
+            return;
+        }
+
+
+        if (ReloadAudioClip != null)
+        {
+            m_Source.pitch = Random.Range(0.7f, 1.0f);
+            m_Source.PlayOneShot(ReloadAudioClip);
+        }
+
+        int chargeInClip = Mathf.Min(remainingBullet, clipSize - m_ClipContent);
+     
+        //the state will only change next frame, so we set it right now.
+        m_CurrentState = WeaponState.Reloading;
+        
+        m_ClipContent += chargeInClip;
+        
+        if(AmmoDisplay)
+            AmmoDisplay.UpdateAmount(m_ClipContent, clipSize);
+        
+        m_Animator.SetTrigger("reload");
+        
+        m_Owner.ChangeAmmo(ammoType, -chargeInClip);
+        
+        WeaponInfoUI.Instance.UpdateClipInfo(this);
+    }
+
+    void Update()
+    {
+        
+        
+
+        UpdateControllerState();        
+        
+        if (m_ShotTimer > 0)
+            m_ShotTimer -= Time.deltaTime;
+
+        Vector3[] pos = new Vector3[2];
+        for (int i = 0; i < m_ActiveTrails.Count; ++i)
+        {
+            var activeTrail = m_ActiveTrails[i];
+            
+            activeTrail.renderer.GetPositions(pos);
+            activeTrail.remainingTime -= Time.deltaTime;
+
+            pos[0] += activeTrail.direction * 50.0f * Time.deltaTime;
+            pos[1] += activeTrail.direction * 50.0f * Time.deltaTime;
+            
+            m_ActiveTrails[i].renderer.SetPositions(pos);
+            
+            if (m_ActiveTrails[i].remainingTime <= 0.0f)
+            {
+                m_ActiveTrails[i].renderer.gameObject.SetActive(false);
+                m_ActiveTrails.RemoveAt(i);
+                i--;
+            }
+        }
+    }
+
+    void UpdateControllerState()
+    {
+        m_Animator.SetFloat("speed", m_Owner.Speed);
+        m_Animator.SetBool("grounded", m_Owner.Grounded);
+        
+        var info = m_Animator.GetCurrentAnimatorStateInfo(0);
+
+        WeaponState newState;
+        if (info.shortNameHash == fireNameHash)
+            newState = WeaponState.Firing;
+        else if (info.shortNameHash == reloadNameHash)
+            newState = WeaponState.Reloading;
+        else
+            newState = WeaponState.Idle;
+
+        if (newState != m_CurrentState)
+        {
+            var oldState = m_CurrentState;
+            m_CurrentState = newState;
+            
+            if (oldState == WeaponState.Firing)
+            {//we just finished firing, so check if we need to auto reload
+                if(m_ClipContent == 0)
+                    Reload();
+            }
+        }
+
+        //Tek tek sıkan yarı otomatik silah kontrolü. Tabanca.
+        if (triggerDown)
+        {
+            if (triggerType == TriggerType.Manual)
+            {
+                if (!m_ShotDone)
+                {
+                    m_ShotDone = true;
+                    Fire();
+                }
+            }
+            else
+                Fire();
+        }
+    }
+    
+    /// <summary>
+    /// This will compute the corrected position of the muzzle flash in world space. Since the weapon camera use a
+    /// different FOV than the main camera, using the muzzle spot to spawn thing rendered by the main camera will appear
+    /// disconnected from the muzzle flash. So this convert the muzzle post from
+    /// world -> view weapon -> clip weapon -> inverse clip main cam -> inverse view cam -> corrected world pos
+    /// </summary>
+    /// <returns></returns>
+    public Vector3 GetCorrectedMuzzlePlace()
+    {
+        Vector3 position = EndPoint.position;
+
+        position = Controller.Instance.WeaponCamera.WorldToScreenPoint(position);
+        position = Controller.Instance.MainCamera.ScreenToWorldPoint(position);
+
+        return position;
+    }
+}
+
+public class AmmoTypeAttribute : PropertyAttribute
+{
+    
+}
+
+//Silahın ammo'sunu gösterecek olan yerin ataması.
+public abstract class AmmoDisplay : MonoBehaviour
+{
+    public abstract void UpdateAmount(int current, int max);
+}
+
