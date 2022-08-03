@@ -1,0 +1,51 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+
+public class ObjectShaker : MonoBehaviour
+{
+    //Bu script sallanacak olan objeye atanacak.
+    //Bu static değişkenle diğer script'lerden ayarlama yap.
+    public static ObjectShaker Instance { get; protected set; }
+
+    //Değerleri.
+    float m_RemainingShakeTime;
+    float m_ShakeStrength;
+    Vector3 m_OriginalPosition;
+    
+    
+    void Awake()
+    {
+        //shaker'ın bu obje olduğunu tanımla.
+        Instance = this;
+        //objenin local pozisyonunu tanımla böylece hareket halinde de olsa savrulabilsin.
+        m_OriginalPosition = transform.localPosition;
+    }
+
+   
+    void Update()
+    {
+        //her shake time 0'dan düşük olduğunda savur.
+        if (m_RemainingShakeTime > 0)
+        {
+            m_RemainingShakeTime -= Time.deltaTime;
+
+            if (m_RemainingShakeTime <= 0)
+            {
+                transform.localPosition = m_OriginalPosition;
+            }
+            else
+            {
+                Vector3 randomDir = Random.insideUnitSphere;
+                transform.localPosition = m_OriginalPosition + randomDir * m_ShakeStrength;
+            }
+        }
+    }
+    //Ne zaman savurmak istersen statik değişken üzerinden çağır.
+    //ObjectShaker.Instance.Shake(time,strenght);
+    public void Shake(float time, float strength)
+    {
+        m_ShakeStrength = strength;
+        m_RemainingShakeTime = time;
+    }
+}
