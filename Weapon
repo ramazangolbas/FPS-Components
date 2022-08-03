@@ -1,16 +1,12 @@
 using System.Collections;
 using System.Collections.Generic;
-using System.Linq;
 using UnityEngine;
-using UnityEngine.Serialization;
-using UnityEngine.UI;
-#if UNITY_EDITOR
-using UnityEditor;
-#endif
+
 
 public class Weapon : MonoBehaviour
 {
     //Weapon script'i atanan objeyi silah durumuna sokar. Controller ile baglantisi vardir.
+    //
 
 
     //???
