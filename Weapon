@@ -6,7 +6,6 @@ using UnityEngine;
 public class Weapon : MonoBehaviour
 {
     //Weapon script'i atanan objeyi silah durumuna sokar. Controller ile baglantisi vardir.
-    //
 
 
     //???
