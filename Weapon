@@ -6,6 +6,7 @@ using UnityEngine;
 public class Weapon : MonoBehaviour
 {
     //Weapon script'i atanan objeyi silah durumuna sokar. Controller ile baglantisi vardir.
+    //
 
 
     //???
@@ -391,18 +392,23 @@ public class Weapon : MonoBehaviour
     }
 
     //For optimization, when a projectile is "destroyed" it is instead disabled and return to the weapon for reuse.
+    //Kurşunu pool'a gönderir. Projactile script tarafından çağrılır.
     public void ReturnProjecticle(Projectile p)
     {
         m_ProjectilePool.Enqueue(p);
     }
 
+    //Şarjör değiştirme.
     public void Reload()
     {
+        //Kurşun bittiğinde ya da animasyon uygun olmadığında kurşun değiştirme.
         if (m_CurrentState != WeaponState.Idle || m_ClipContent == clipSize)
             return;
 
+        //o an varolan ammo tipindeki veriyi çeker.
         int remainingBullet = m_Owner.GetAmmo(ammoType);
 
+        // Kurşun yoksa r ye basınca disable et.
         if (remainingBullet == 0)
         {
             //No more bullet, so we disable the gun so it's displayed on empty (useful e.g. for  grenade)
@@ -411,46 +417,54 @@ public class Weapon : MonoBehaviour
             return;
         }
 
-
+        //Reload sesi inspector'dan atanmışsa gir.
         if (ReloadAudioClip != null)
         {
             m_Source.pitch = Random.Range(0.7f, 1.0f);
             m_Source.PlayOneShot(ReloadAudioClip);
         }
 
+        //yedek kurşunlardan en az olanı çeker.
         int chargeInClip = Mathf.Min(remainingBullet, clipSize - m_ClipContent);
      
         //the state will only change next frame, so we set it right now.
+        //WeaponState reloading moduna geçer. Böylece bu if'den çıkmış olur. Bir sonrraki frame'de başlayacağı için
+        //buraya yazabiliyormuşuz.
         m_CurrentState = WeaponState.Reloading;
         
+        //yedek kurşunlardan şarjöre kurşun koyar.
         m_ClipContent += chargeInClip;
         
+        //eğer ammoDisplay aktifse onu gösterir.
         if(AmmoDisplay)
             AmmoDisplay.UpdateAmount(m_ClipContent, clipSize);
-        
+        //animatordeki reload'ı aktifleştirir.
         m_Animator.SetTrigger("reload");
-        
+        //Warolan ammo'nun yedek mermilerini azaltir.
         m_Owner.ChangeAmmo(ammoType, -chargeInClip);
-        
+        //UI'a silahın ismini yazdırır.
         WeaponInfoUI.Instance.UpdateClipInfo(this);
     }
 
     void Update()
     {
-        
-        
-
+        //Silah sıktı mı? Ateş etme bitti mi? gibi şeyleri kontrol eden fonksiyon.
         UpdateControllerState();        
         
+        //Hangi sıklıkta ateş edeceği.
         if (m_ShotTimer > 0)
             m_ShotTimer -= Time.deltaTime;
-
+        //Kurşunu deactive etme.
+        //Kurşunun çıkış pozisyonu.
         Vector3[] pos = new Vector3[2];
         for (int i = 0; i < m_ActiveTrails.Count; ++i)
         {
+            //o an aktif kurşunlar
             var activeTrail = m_ActiveTrails[i];
             
+            //renderer pozisyonunu al.
             activeTrail.renderer.GetPositions(pos);
+            //zamanı geri say ve atılan kurşun bu zaman içinde yok olsun.
             activeTrail.remainingTime -= Time.deltaTime;
 
             pos[0] += activeTrail.direction * 50.0f * Time.deltaTime;
@@ -458,6 +472,7 @@ public class Weapon : MonoBehaviour
             
             m_ActiveTrails[i].renderer.SetPositions(pos);
             
+            //Zamanı dolan kurşunu yok et.
             if (m_ActiveTrails[i].remainingTime <= 0.0f)
             {
                 m_ActiveTrails[i].renderer.gameObject.SetActive(false);
@@ -469,11 +484,14 @@ public class Weapon : MonoBehaviour
 
     void UpdateControllerState()
     {
+        //O an elinde olan silahın hızı/Yere basıp basmadığının animasyonu güncellenir.
         m_Animator.SetFloat("speed", m_Owner.Speed);
         m_Animator.SetBool("grounded", m_Owner.Grounded);
         
+        //0. layer'ın verisini çeker. O an varolan silahın bilgisi.
         var info = m_Animator.GetCurrentAnimatorStateInfo(0);
 
+        //O an elinde tuttuğun silahın ateş ettiğinin/kurşun doldurduğunun/hiçbir şey yapmadığının kontrolünü yapar. 
         WeaponState newState;
         if (info.shortNameHash == fireNameHash)
             newState = WeaponState.Firing;
@@ -482,11 +500,12 @@ public class Weapon : MonoBehaviour
         else
             newState = WeaponState.Idle;
 
+        //eğer elindeki silah o anki olması gereken durumda değilse.
         if (newState != m_CurrentState)
         {
             var oldState = m_CurrentState;
             m_CurrentState = newState;
-            
+            //Silah ateş ediyorsa şarjörü doldur.
             if (oldState == WeaponState.Firing)
             {//we just finished firing, so check if we need to auto reload
                 if(m_ClipContent == 0)
