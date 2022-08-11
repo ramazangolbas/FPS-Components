@@ -1,0 +1,98 @@
+using UnityEngine;
+using System.Collections;
+using System.Collections.Generic;
+
+
+public class PlaneFragmantation : MonoBehaviour
+{
+    [Header("Destructible Objects")]
+    public GameObject[] fragmantableParts;
+    [Header("Destruction Time")]
+    [Range(0,5)]
+    [SerializeField] private float timer = 1f;
+
+    //Dictionary listesine eklenecek olan objelerin keyleri.
+    int theKeyOfGameObject = 0;
+    //Deaktif olacak olan objelerin listesi.
+    Dictionary<int, GameObject> objectsThatWillDestroyed = new Dictionary<int, GameObject>();
+    //Deaktif olan objelerin listesi.
+    List<int> choosedNumbers = new List<int>();
+
+    //
+    int selectedObjectNumber;
+    private float timeSpend=0;
+
+    public void Awake()
+    { 
+        //kaç tane fragmantable var say ve dictinoary'e ekle.
+        foreach (var fragmantablePart in fragmantableParts)
+        {
+            //bu dictionary'e eklenen her objeye bir key ata.
+            objectsThatWillDestroyed.Add(theKeyOfGameObject, fragmantablePart);
+            theKeyOfGameObject++;
+        }
+    }
+
+
+    private void Update()
+    {
+        DestructionChecker();
+    }
+
+   
+    private void DestructionChecker()
+    {
+        //canın bittiğinde.
+        if (DamageAndPointSystem.health <= 0)
+        {
+            DestructObjectParts();
+        }
+        //Canın 0'dan fazlaysa hiçbir şey yapma.
+        else
+        {
+            return;
+        }
+
+    }
+
+    private void DestructObjectParts()
+    {
+        //Yok edilen ve edilecek olan objeler eşit sayıda değilse. Yani hala yok edilecek obje varsa içeri gir.
+        if (choosedNumbers.Count != objectsThatWillDestroyed.Count)
+        {
+            //kaç saniyede bir yok edileceğini hesapla.
+            timeSpend -= Time.deltaTime;
+            if (timeSpend>0)
+            {
+                return;
+            }
+            else
+            {
+                //bir random değer ata.
+                selectedObjectNumber = Random.Range(0, objectsThatWillDestroyed.Count);
+                Debug.Log("selected random value:" + selectedObjectNumber);
+                //bu random değer aşağıda girilecek olan choosed number listesinde yoksa(yani daha önce seçilmemişse) içine gir.
+                if (!choosedNumbers.Contains(selectedObjectNumber))
+                {
+                    //bu key'e sahip olan objeyi deaktif et. Ardından deaktif olan objeyi deaktifler listesine ekle.
+                    objectsThatWillDestroyed[selectedObjectNumber].transform.gameObject.SetActive(false);
+                    choosedNumbers.Add(selectedObjectNumber);
+                    timeSpend = timer;
+                }
+                //eğer bu random değer daha önce seçilmişse başa dön tekrar bir random değer ata.
+                else
+                {
+                    return;
+                }
+            }
+
+        }
+        //Yok edilecek obje yoksa hiçbir şey yapma.
+        else
+        {
+            return;
+        }
+    }
+    
+
+}
